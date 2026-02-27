@@ -408,6 +408,14 @@ async def main() -> None:
         help=f"Directory containing PDF files (default: {DEFAULT_DOCS_DIR})",
     )
     parser.add_argument(
+        "--docs-folder",
+        default=None,
+        help=(
+            "Folder name under project parent directory. "
+            "Example: --docs-folder documents_alt -> ../documents_alt"
+        ),
+    )
+    parser.add_argument(
         "--config",
         default=str(DEFAULT_CONFIG),
         help=f"Benchmark config path (default: {DEFAULT_CONFIG})",
@@ -478,7 +486,10 @@ async def main() -> None:
         )
         return
 
-    docs_dir = Path(args.docs_dir)
+    if args.docs_folder:
+        docs_dir = (PROJECT_ROOT.parent / args.docs_folder).resolve()
+    else:
+        docs_dir = Path(args.docs_dir)
     if not docs_dir.is_absolute():
         docs_dir = (PROJECT_ROOT / docs_dir).resolve()
     if not docs_dir.exists():
