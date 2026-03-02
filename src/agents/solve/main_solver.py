@@ -43,6 +43,7 @@ class MainSolver:
         output_base_dir: str | None = None,
         tool_registry: ToolRegistry | None = None,
         disable_memory: bool = False,
+        disable_planner_retrieve: bool = False,
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> None:
@@ -57,6 +58,7 @@ class MainSolver:
         self._output_base_dir = output_base_dir
         self._external_tool_registry = tool_registry
         self.disable_memory = disable_memory
+        self.disable_planner_retrieve = disable_planner_retrieve
         self._max_tokens_override = max_tokens
         self._temperature_override = temperature
 
@@ -209,7 +211,11 @@ class MainSolver:
             token_tracker=self.token_tracker,
             language=lang,
         )
-        self.planner_agent = PlannerAgent(**common, tool_registry=self.tool_registry)
+        self.planner_agent = PlannerAgent(
+            **common,
+            tool_registry=self.tool_registry,
+            enable_pre_retrieve=not self.disable_planner_retrieve,
+        )
         self.solver_agent = SolverAgent(**common, tool_registry=self.tool_registry)
         self.writer_agent = WriterAgent(**common)
 

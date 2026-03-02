@@ -57,6 +57,7 @@ class PlannerAgent(BaseAgent):
         token_tracker: Any | None = None,
         language: str = "en",
         tool_registry: ToolRegistry | None = None,
+        enable_pre_retrieve: bool = True,
     ) -> None:
         super().__init__(
             module_name="solve",
@@ -70,6 +71,7 @@ class PlannerAgent(BaseAgent):
             language=language,
         )
         self._tool_registry = tool_registry or ToolRegistry.create_default(language)
+        self._enable_pre_retrieve = enable_pre_retrieve
 
     async def process(
         self,
@@ -93,7 +95,11 @@ class PlannerAgent(BaseAgent):
         Returns:
             A Plan object with ordered steps.
         """
-        rag_context = await self._pre_retrieve(question, kb_name)
+        rag_context = (
+            await self._pre_retrieve(question, kb_name)
+            if self._enable_pre_retrieve
+            else "(retrieval disabled)"
+        )
 
         system_prompt = self._build_system_prompt()
         user_prompt = self._build_user_prompt(

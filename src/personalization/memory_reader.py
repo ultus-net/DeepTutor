@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 _workspace_reader_var: contextvars.ContextVar[Optional["MemoryReader"]] = (
     contextvars.ContextVar("_workspace_reader", default=None)
 )
+# Contextvar to explicitly disable memory reads in a request scope.
+_workspace_memory_disabled_var: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar("_workspace_memory_disabled", default=False)
+)
 
 
 class MemoryReader:
@@ -274,6 +278,9 @@ def get_memory_reader_instance() -> Optional[MemoryReader]:
     (e.g. by the simulator tools), it takes priority over the global
     singleton so that all agents read from the correct workspace.
     """
+    if _workspace_memory_disabled_var.get(False):
+        return None
+
     ws_reader = _workspace_reader_var.get(None)
     if ws_reader is not None:
         return ws_reader

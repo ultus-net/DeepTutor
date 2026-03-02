@@ -163,26 +163,32 @@ async def _generate_with_deeptutor(
     workspace: str,
     language: str,
 ) -> str:
-    from benchmark.simulation.tools import generate_questions, solve_question
+    from benchmark.iso_solve.core.pipeline import run_solver_pipeline
+    from benchmark.simulation.tools import generate_questions
 
     if task_type == "solve":
-        result = await solve_question(
-            workspace=workspace,
-            kb_name=kb_name,
+        solve_tools = ["code_execute", "reason"]
+        result = await run_solver_pipeline(
             question=query,
+            workspace=workspace,
             language=language,
-            enabled_tools=["code_execute", "reason"],
-            enable_memory=False,
+            tools=solve_tools,
         )
-        return (result.get("answer") or "").strip() or "(No answer generated.)"
+        return (result.get("final_answer") or "").strip() or "(No answer generated.)"
 
+    # iso_solve-style gating: if rag is disabled for question generation,
+    # don't pass a KB name to avoid any accidental KB-side initialization.
+    q_tools = {"rag": False, "web": False}
+    q_kb_name = kb_name if q_tools["rag"] else ""
     q_result = await generate_questions(
         workspace=workspace,
-        kb_name=kb_name,
+        kb_name=q_kb_name,
         topic=query,
         num_questions=1,
         language=language,
         enable_memory=False,
+        enable_rag=q_tools["rag"],
+        enable_web=q_tools["web"],
     )
     return _format_question_from_deeptutor(q_result)
 
@@ -337,6 +343,8 @@ async def _eval_one_record(
     systems: list[str],
     profile_context_map: dict[tuple[str, str], dict[str, Any]],
     deeptutor_language: str,
+    record_index: int = 0,
+    total_records: int = 0,
 ) -> dict[str, Any]:
     kb_name = str(record.get("kb_name", ""))
     profile_id = str(record.get("profile_id", ""))
@@ -357,14 +365,18 @@ async def _eval_one_record(
         "topic": record.get("topic", ""),
         "systems": {},
     }
+    prefix = f"[record {record_index}/{total_records} {profile_entry_id}]"
+    logger.info("%s start", prefix)
 
     for system in systems:
         system_out: dict[str, Any] = {}
+        logger.info("%s [%s] start", prefix, system)
 
         # solve
         t0 = time.perf_counter()
         solve_text = ""
         solve_error = None
+        logger.info("%s [%s] solve.generate start", prefix, system)
         try:
             if system == "baseline":
                 solve_text = await _generate_with_baseline(solve_query, "solve")
@@ -380,10 +392,24 @@ async def _eval_one_record(
         except Exception as e:
             solve_error = str(e)
             solve_text = ""
+        logger.info(
+            "%s [%s] solve.generate done in %.2fs%s",
+            prefix,
+            system,
+            time.perf_counter() - t0,
+            f" (error: {solve_error})" if solve_error else "",
+        )
+        logger.info("%s [%s] solve.judge start", prefix, system)
         solve_judge = await _judge_solve(
             query=solve_query,
             output_text=solve_text,
             profile_context=profile_context,
+        )
+        logger.info(
+            "%s [%s] solve.judge done (overall=%s)",
+            prefix,
+            system,
+            solve_judge.get("overall"),
         )
         system_out["solve"] = {
             "query": solve_query,
@@ -397,6 +423,7 @@ async def _eval_one_record(
         t1 = time.perf_counter()
         question_text = ""
         question_error = None
+        logger.info("%s [%s] question.generate start", prefix, system)
         try:
             if system == "baseline":
                 question_text = await _generate_with_baseline(question_query, "question")
@@ -412,10 +439,24 @@ async def _eval_one_record(
         except Exception as e:
             question_error = str(e)
             question_text = ""
+        logger.info(
+            "%s [%s] question.generate done in %.2fs%s",
+            prefix,
+            system,
+            time.perf_counter() - t1,
+            f" (error: {question_error})" if question_error else "",
+        )
+        logger.info("%s [%s] question.judge start", prefix, system)
         question_judge = await _judge_question(
             query=question_query,
             output_text=question_text,
             profile_context=profile_context,
+        )
+        logger.info(
+            "%s [%s] question.judge done (overall=%s)",
+            prefix,
+            system,
+            question_judge.get("overall"),
         )
         system_out["question"] = {
             "query": question_query,
@@ -426,6 +467,14 @@ async def _eval_one_record(
         }
 
         output["systems"][system] = system_out
+        logger.info(
+            "%s [%s] done (solve=%.2fs question=%.2fs)",
+            prefix,
+            system,
+            system_out["solve"]["elapsed_sec"],
+            system_out["question"]["elapsed_sec"],
+        )
+    logger.info("%s complete", prefix)
     return output
 
 
@@ -495,16 +544,19 @@ async def async_main() -> None:
 
     sem = asyncio.Semaphore(max(1, args.max_concurrency))
 
-    async def _run_with_sem(rec: dict[str, Any]) -> dict[str, Any]:
+    async def _run_with_sem(i: int, rec: dict[str, Any]) -> dict[str, Any]:
         async with sem:
+            t_rec = time.perf_counter()
             return await _eval_one_record(
                 record=rec,
                 systems=systems,
                 profile_context_map=profile_context_map,
                 deeptutor_language=args.deeptutor_language,
+                record_index=i + 1,
+                total_records=len(records),
             )
 
-    results = await asyncio.gather(*[_run_with_sem(r) for r in records])
+    results = await asyncio.gather(*[_run_with_sem(i, r) for i, r in enumerate(records)])
     summary = _build_summary(results, systems)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

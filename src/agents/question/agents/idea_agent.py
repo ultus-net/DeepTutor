@@ -22,6 +22,7 @@ class IdeaAgent(BaseAgent):
         self,
         kb_name: str | None = None,
         rag_mode: str = "naive",
+        enable_rag: bool = True,
         language: str = "en",
         **kwargs: Any,
     ) -> None:
@@ -33,6 +34,7 @@ class IdeaAgent(BaseAgent):
         )
         self.kb_name = kb_name
         self.rag_mode = rag_mode
+        self.enable_rag = enable_rag
 
     async def process(
         self,
@@ -46,12 +48,18 @@ class IdeaAgent(BaseAgent):
         """
         Build grounded candidate ideas for evaluator ranking.
         """
-        queries = await self._generate_rag_queries(user_topic=user_topic, num_queries=3)
-        retrievals = await self._retrieve_context(queries)
-        raw_context = self._build_context(retrievals)
-        knowledge_context = await self._aggregate_context(
-            user_topic=user_topic, raw_context=raw_context
-        )
+        if self.enable_rag and self.kb_name:
+            queries = await self._generate_rag_queries(user_topic=user_topic, num_queries=3)
+            retrievals = await self._retrieve_context(queries)
+            raw_context = self._build_context(retrievals)
+            knowledge_context = await self._aggregate_context(
+                user_topic=user_topic, raw_context=raw_context
+            )
+        else:
+            queries = []
+            retrievals = []
+            raw_context = "Retrieval disabled."
+            knowledge_context = raw_context
         ideas = await self._generate_ideas(
             user_topic=user_topic,
             preference=preference,

@@ -51,6 +51,8 @@ class AgentCoordinator:
         kb_name: str | None = None,
         output_dir: str | None = None,
         language: str = "en",
+        tool_flags_override: dict[str, bool] | None = None,
+        enable_idea_rag: bool = True,
     ) -> None:
         self.kb_name = kb_name
         self.output_dir = output_dir
@@ -60,6 +62,7 @@ class AgentCoordinator:
         self._api_version = api_version
         self._ws_callback: Callable | None = None
         self._batch_dir: Path | None = None
+        self.enable_idea_rag = enable_idea_rag
 
         self.config = load_config_with_main("question_config.yaml", project_root)
 
@@ -73,9 +76,14 @@ class AgentCoordinator:
         self.max_parallel_questions = question_cfg.get("max_parallel_questions", 1)
         self.idea_cfg = question_cfg.get("idea_loop", {})
         self.generation_cfg = question_cfg.get("generation", {})
-        self.tool_flags = self.generation_cfg.get(
+        default_tool_flags = self.generation_cfg.get(
             "tools",
             {"web_search": True, "rag_tool": True, "write_code": True},
+        )
+        self.tool_flags = (
+            tool_flags_override
+            if isinstance(tool_flags_override, dict)
+            else default_tool_flags
         )
 
     # ------------------------------------------------------------------
@@ -133,6 +141,7 @@ class AgentCoordinator:
         return IdeaAgent(
             kb_name=self.kb_name,
             rag_mode=self.rag_mode,
+            enable_rag=self.enable_idea_rag,
             language=self.language,
             api_key=self._api_key,
             base_url=self._base_url,

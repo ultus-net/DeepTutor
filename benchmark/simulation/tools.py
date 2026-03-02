@@ -28,7 +28,11 @@ load_dotenv(_PROJECT_ROOT / ".env", override=False)
 
 import yaml
 
-from src.personalization.memory_reader import MemoryReader, _workspace_reader_var
+from src.personalization.memory_reader import (
+    MemoryReader,
+    _workspace_memory_disabled_var,
+    _workspace_reader_var,
+)
 from src.personalization.trace_forest import TraceForest
 from src.personalization.trace_tree import TraceNode, TraceTree
 from src.agents.solve.tools import ToolRegistry
@@ -63,6 +67,7 @@ async def solve_question(
     language: str = "en",
     enabled_tools: list[str] | None = None,
     enable_memory: bool = True,
+    enable_planner_retrieve: bool = True,
 ) -> dict[str, Any]:
     """Solve a question with the full Plan → ReAct → Write pipeline.
 
@@ -77,10 +82,13 @@ async def solve_question(
     session = WorkspaceSession(workspace)
     forest: TraceForest | None = None
     token = None
+    disable_token = None
     if enable_memory:
         forest = TraceForest(memory_dir=session.memory_dir)
         reader = MemoryReader(forest=forest)
         token = _workspace_reader_var.set(reader)
+    else:
+        disable_token = _workspace_memory_disabled_var.set(True)
 
     try:
         from src.agents.solve import MainSolver
@@ -96,6 +104,7 @@ async def solve_question(
             language=language,
             output_base_dir=str(session.solve_dir),
             tool_registry=tool_registry,
+            disable_planner_retrieve=not enable_planner_retrieve,
         )
         await solver.ainit()
         result = await solver.solve(question)
@@ -124,6 +133,8 @@ async def solve_question(
     finally:
         if token is not None:
             _workspace_reader_var.reset(token)
+        if disable_token is not None:
+            _workspace_memory_disabled_var.reset(disable_token)
 
 
 # ======================================================================
@@ -138,6 +149,8 @@ async def generate_questions(
     num_questions: int = 3,
     language: str = "en",
     enable_memory: bool = True,
+    enable_rag: bool = True,
+    enable_web: bool = True,
 ) -> dict[str, Any]:
     """Generate multiple-choice questions with memory.
 
@@ -153,10 +166,13 @@ async def generate_questions(
     session = WorkspaceSession(workspace)
     forest: TraceForest | None = None
     token = None
+    disable_token = None
     if enable_memory:
         forest = TraceForest(memory_dir=session.memory_dir)
         reader = MemoryReader(forest=forest)
         token = _workspace_reader_var.set(reader)
+    else:
+        disable_token = _workspace_memory_disabled_var.set(True)
 
     try:
         from src.agents.question import AgentCoordinator
@@ -165,6 +181,12 @@ async def generate_questions(
             kb_name=kb_name,
             output_dir=str(session.question_dir),
             language=language,
+            tool_flags_override={
+                "rag_tool": enable_rag,
+                "web_search": enable_web,
+                "write_code": True,
+            },
+            enable_idea_rag=enable_rag,
         )
         summary = await coordinator.generate_from_topic(
             user_topic=topic,
@@ -212,6 +234,8 @@ async def generate_questions(
     finally:
         if token is not None:
             _workspace_reader_var.reset(token)
+        if disable_token is not None:
+            _workspace_memory_disabled_var.reset(disable_token)
 
 
 # ======================================================================

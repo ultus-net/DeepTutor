@@ -40,7 +40,7 @@ logger = logging.getLogger("benchmark.init_kbs_profiles")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_CONFIG = PROJECT_ROOT / "benchmark" / "config" / "benchmark_config.yaml"
 DEFAULT_DOCS_DIR = PROJECT_ROOT.parent / "documents"
-MAX_CONCURRENCY = 5
+MAX_CONCURRENCY = 4
 
 
 class PipelineAbortError(RuntimeError):
