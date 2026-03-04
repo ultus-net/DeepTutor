@@ -194,9 +194,10 @@ async def _process_pdf(
     mineru_api_token: str | None,
     mineru_model_version: str,
     force: bool = False,
+    kb_only: bool = False,
 ) -> dict | None:
     """Initialize KB from one PDF and generate profiles."""
-    if not force and _is_profile_complete(output_dir, kb_name):
+    if not kb_only and not force and _is_profile_complete(output_dir, kb_name):
         logger.info("SKIP (complete): %s — profile already exists", kb_name)
         return None
 
@@ -232,6 +233,7 @@ async def _process_pdf(
         rag_cfg=rag_cfg,
         output_dir=output_dir,
         skip_extract=skip_extract,
+        kb_only=kb_only,
     )
 
 
@@ -279,11 +281,16 @@ async def _run_post_gpu_stage(
     rag_cfg: dict,
     output_dir: Path,
     skip_extract: bool,
+    kb_only: bool = False,
 ) -> dict:
     """Run non-GPU stage after documents are processed."""
     initializer = KnowledgeBaseInitializer(kb_name=kb_name, base_dir=str(kb_base_dir))
     if not skip_extract:
         await asyncio.to_thread(initializer.extract_numbered_items)
+
+    if kb_only:
+        logger.info("KB-only mode: skipping profile generation for %s", kb_name)
+        return {"pdf_file": str(pdf_path), "kb_name": kb_name, "knowledge_scope": {}, "profiles": [], "num_profiles": 0}
 
     scope = await generate_knowledge_scope(
         kb_name=kb_name,
@@ -327,9 +334,10 @@ async def _run_jobs_with_gpu_pipeline(
     mineru_api_token: str | None,
     mineru_model_version: str,
     force: bool = False,
+    kb_only: bool = False,
 ) -> list[dict]:
     """Run jobs with GPU-stage sharding and immediate refill."""
-    if not force:
+    if not kb_only and not force:
         original_count = len(jobs)
         jobs = [
             (pdf, kb) for pdf, kb in jobs
@@ -441,6 +449,7 @@ async def _run_jobs_with_gpu_pipeline(
                     rag_cfg=rag_cfg,
                     output_dir=output_dir,
                     skip_extract=skip_extract,
+                    kb_only=kb_only,
                 )
             )
             post_tasks.add(post_task)
@@ -530,6 +539,11 @@ async def main() -> None:
         "--output-dir",
         default=None,
         help="Resume into an existing output directory instead of creating a new one.",
+    )
+    parser.add_argument(
+        "--kb-only",
+        action="store_true",
+        help="Only build knowledge bases, skip profile generation.",
     )
     parser.add_argument(
         "--force",
@@ -630,6 +644,7 @@ async def main() -> None:
                     rag_cfg=rag_cfg,
                     output_dir=output_dir,
                     skip_extract=args.skip_extract,
+                    kb_only=args.kb_only,
                 )
                 results.append(result)
             except Exception as e:
@@ -668,6 +683,7 @@ async def main() -> None:
                     mineru_api_token=args.mineru_api_token,
                     mineru_model_version=args.mineru_model_version,
                     force=args.force,
+                    kb_only=args.kb_only,
                 )
                 if result is not None:
                     results.append(result)
@@ -696,6 +712,7 @@ async def main() -> None:
                 mineru_api_token=args.mineru_api_token,
                 mineru_model_version=args.mineru_model_version,
                 force=args.force,
+                kb_only=args.kb_only,
             )
         except PipelineAbortError as e:
             logger.error("%s", e)
