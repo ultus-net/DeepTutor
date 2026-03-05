@@ -399,17 +399,17 @@ def _extract_eval_summary(eval_result: dict) -> dict:
 
 
 # ======================================================================
-# Orchestration: one (profile, backend) pair at a time
+# Orchestration: one profile at a time (backends serial)
 # ======================================================================
 
 
-async def _process_one_profile_backend(
+async def _process_one_profile(
     kb_name: str,
     profile: dict,
     scope: dict,
     cfg: dict,
     kb_base_dir: str,
-    backend: str,
+    backends: list[str],
     output_dir: Path,
     semaphore: asyncio.Semaphore,
     max_turns: int,
@@ -419,16 +419,15 @@ async def _process_one_profile_backend(
     skip_eval: bool,
     verbose: bool,
 ) -> dict:
-    """Process one (profile, backend) pair: generate entries → simulate → evaluate."""
+    """Process one profile: generate entries, then run backends serially."""
     async with semaphore:
         profile_id = profile.get("profile_id", "unknown")
         profile_result: dict[str, Any] = {
             "profile_id": profile_id,
             "kb_name": kb_name,
-            "backend": backend,
             "num_entries": 0,
-            "simulation": {},
-            "evaluation": {},
+            "simulations": {},
+            "evaluations": {},
         }
 
         # ----------------------------------------------------------
@@ -466,110 +465,72 @@ async def _process_one_profile_backend(
         profile_result["num_entries"] = len(entries)
 
         # ----------------------------------------------------------
-        # Step 2: Simulate
+        # Step 2 & 3: Simulate + Evaluate each backend serially
         # ----------------------------------------------------------
-        transcript_path = (
-            output_dir / "transcripts" / backend / f"{profile_id}.json"
-        )
+        for backend in backends:
+            transcript_path = output_dir / "transcripts" / backend / f"{profile_id}.json"
 
-        if transcript_path.exists():
-            logger.info(
-                "SKIP simulation (exists): %s / %s", profile_id, backend
-            )
-            sim_result = json.loads(transcript_path.read_text("utf-8"))
-        else:
-            try:
-                sim_result = await _simulate_profile(
-                    profile_id=profile_id,
-                    entries=entries,
-                    backend=backend,
-                    output_dir=output_dir,
-                    max_turns=max_turns,
-                    language=language,
-                    evolve_profile=evolve_profile,
-                    verbose=verbose,
-                )
-            except Exception as e:
-                logger.error(
-                    "Simulation failed for %s / %s: %s",
-                    profile_id,
-                    backend,
-                    e,
-                )
-                sim_result = {"error": str(e)}
-
-        profile_result["simulation"] = {
-            "num_sessions": sim_result.get("num_sessions", 0),
-            "practice_eval_profile": sim_result.get("practice_eval_profile"),
-            "transcript_path": str(transcript_path),
-        }
-
-        # ----------------------------------------------------------
-        # Step 3: Evaluate
-        # ----------------------------------------------------------
-        if (
-            not skip_eval
-            and transcript_path.exists()
-            and "error" not in sim_result
-        ):
-            eval_dir = output_dir / "evaluations" / backend
-            eval_path = eval_dir / f"{profile_id}_eval.json"
-            if eval_path.exists():
-                logger.info(
-                    "SKIP evaluation (exists): %s / %s", profile_id, backend
-                )
-                eval_result = json.loads(eval_path.read_text("utf-8"))
+            if transcript_path.exists():
+                logger.info("SKIP simulation (exists): %s / %s", profile_id, backend)
+                sim_result = json.loads(transcript_path.read_text("utf-8"))
             else:
                 try:
-                    eval_result = await _evaluate_profile_transcript(
-                        transcript_path=transcript_path,
-                        eval_output_dir=eval_dir,
-                        temperature=eval_temperature,
+                    sim_result = await _simulate_profile(
+                        profile_id=profile_id,
+                        entries=entries,
+                        backend=backend,
+                        output_dir=output_dir,
+                        max_turns=max_turns,
+                        language=language,
+                        evolve_profile=evolve_profile,
+                        verbose=verbose,
                     )
                 except Exception as e:
                     logger.error(
-                        "Evaluation failed for %s / %s: %s",
+                        "Simulation failed for %s / %s: %s",
                         profile_id,
                         backend,
                         e,
                     )
-                    eval_result = {"error": str(e)}
+                    sim_result = {"error": str(e)}
 
-            profile_result["evaluation"] = _extract_eval_summary(eval_result)
+            profile_result["simulations"][backend] = {
+                "num_sessions": sim_result.get("num_sessions", 0),
+                "practice_eval_profile": sim_result.get("practice_eval_profile"),
+                "transcript_path": str(transcript_path),
+            }
+
+            if (
+                not skip_eval
+                and transcript_path.exists()
+                and "error" not in sim_result
+            ):
+                eval_dir = output_dir / "evaluations" / backend
+                eval_path = eval_dir / f"{profile_id}_eval.json"
+                if eval_path.exists():
+                    logger.info(
+                        "SKIP evaluation (exists): %s / %s", profile_id, backend
+                    )
+                    eval_result = json.loads(eval_path.read_text("utf-8"))
+                else:
+                    try:
+                        eval_result = await _evaluate_profile_transcript(
+                            transcript_path=transcript_path,
+                            eval_output_dir=eval_dir,
+                            temperature=eval_temperature,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Evaluation failed for %s / %s: %s",
+                            profile_id,
+                            backend,
+                            e,
+                        )
+                        eval_result = {"error": str(e)}
+
+                profile_result["evaluations"][backend] = _extract_eval_summary(eval_result)
 
         return profile_result
-
-
-def _merge_profile_backend_results(
-    all_results: list[dict],
-    all_kb_data: list[dict],
-    backends: list[str],
-) -> list[dict]:
-    """Merge per-(profile, backend) results into per-KB structure for summary."""
-    by_kb: dict[str, dict[str, dict]] = {}
-    for r in all_results:
-        kb = r["kb_name"]
-        pid = r["profile_id"]
-        backend = r["backend"]
-        if kb not in by_kb:
-            by_kb[kb] = {}
-        if pid not in by_kb[kb]:
-            by_kb[kb][pid] = {
-                "profile_id": pid,
-                "kb_name": kb,
-                "num_entries": r.get("num_entries", 0),
-                "simulations": {},
-                "evaluations": {},
-            }
-        by_kb[kb][pid]["simulations"][backend] = r.get("simulation", {})
-        by_kb[kb][pid]["evaluations"][backend] = r.get("evaluation", {})
-
-    kb_results: list[dict] = []
-    for kb_data in all_kb_data:
-        kb_name = kb_data["kb_name"]
-        profiles = list((by_kb.get(kb_name) or {}).values())
-        kb_results.append({"kb_name": kb_name, "profiles": profiles})
-    return kb_results
 
 
 # ======================================================================
@@ -742,7 +703,7 @@ async def main() -> None:
         "--concurrency",
         type=int,
         default=6,
-        help="Max parallel (profile, backend) tasks (default: 6)",
+        help="Max parallel profile tasks (default: 6)",
     )
     parser.add_argument(
         "--max-turns",
@@ -899,31 +860,30 @@ async def main() -> None:
         logger.info("Entry generation complete. Output: %s", output_dir)
         return
 
-    # Build tasks: one per (profile, backend) pair for full parallelism
+    # Build tasks: one per profile (each task runs backends serially)
     tasks = []
     for data in all_kb_data:
         kb_name = data["kb_name"]
         scope = data["knowledge_scope"]
         for profile in data["profiles"]:
-            for backend in backends_for_sim:
-                tasks.append(
-                    _process_one_profile_backend(
-                        kb_name=kb_name,
-                        profile=profile,
-                        scope=scope,
-                        cfg=cfg,
-                        kb_base_dir=str(kb_base_dir),
-                        backend=backend,
-                        output_dir=output_dir,
-                        semaphore=semaphore,
-                        max_turns=args.max_turns,
-                        language=args.language,
-                        evolve_profile=not args.no_evolve,
-                        eval_temperature=args.eval_temperature,
-                        skip_eval=args.skip_eval,
-                        verbose=args.verbose,
-                    )
+            tasks.append(
+                _process_one_profile(
+                    kb_name=kb_name,
+                    profile=profile,
+                    scope=scope,
+                    cfg=cfg,
+                    kb_base_dir=str(kb_base_dir),
+                    backends=backends_for_sim,
+                    output_dir=output_dir,
+                    semaphore=semaphore,
+                    max_turns=args.max_turns,
+                    language=args.language,
+                    evolve_profile=not args.no_evolve,
+                    eval_temperature=args.eval_temperature,
+                    skip_eval=args.skip_eval,
+                    verbose=args.verbose,
                 )
+            )
 
     total_tasks = len(tasks)
     logger.info("Launching %d parallel tasks (concurrency=%d)", total_tasks, args.concurrency)
@@ -937,8 +897,14 @@ async def main() -> None:
         else:
             good_results.append(result)
 
-    # Merge per-(profile, backend) results into per-KB structure
-    kb_results = _merge_profile_backend_results(good_results, all_kb_data, backends_for_sim)
+    # Group per-profile results by KB for summary
+    by_kb: dict[str, list[dict]] = {d["kb_name"]: [] for d in all_kb_data}
+    for r in good_results:
+        by_kb.setdefault(r.get("kb_name", "unknown"), []).append(r)
+    kb_results = [
+        {"kb_name": d["kb_name"], "profiles": by_kb.get(d["kb_name"], [])}
+        for d in all_kb_data
+    ]
 
     # Summary
     _build_and_print_summary(kb_results, backends_for_sim, output_dir)

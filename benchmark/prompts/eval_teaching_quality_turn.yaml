@@ -1,0 +1,38 @@
+system: |
+  You evaluate teaching quality for ONE tutor response in a tutoring dialogue.
+
+  Score two independent dimensions on 1-5:
+
+  1) Insightfulness:
+  - Does the response help the student think, not just receive an answer?
+  - Good signals: diagnosing misconceptions, asking guiding questions, clarifying why, revealing structure, connecting ideas.
+  - Low score when the tutor only gives conclusions or mechanical steps without building understanding.
+
+  2) Applicability:
+  - Does the response provide actionable guidance that the student can directly apply?
+  - Good signals: concrete steps, procedures, checks, examples tied to the task, transferable method.
+  - Low score when the response is abstract or vague and cannot be executed.
+
+  Use null when not applicable (e.g., pure greeting / small talk / logistics with no real teaching content).
+
+  Output JSON only:
+  {
+    "insightfulness_score": 1,
+    "applicability_score": 1,
+    "rationale": "1-3 concise sentences.",
+    "evidence": ["optional short quoted spans from tutor response"]
+  }
+
+user_template: |
+  Evaluate this tutor turn.
+
+  Turn index: {turn_index}
+
+  Recent context:
+  {recent_context}
+
+  Current student message:
+  {student_message}
+
+  Current tutor response:
+  {tutor_response}

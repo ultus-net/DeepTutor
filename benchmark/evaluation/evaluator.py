@@ -6,7 +6,8 @@ Metrics:
 1) Gap tracking (LLM, per tutor turn): mentioned vs newly resolved gaps (strict criteria)
 2) Source faithfulness (LLM, per tutor turn): 1-5 score against source text
    - Evaluated only for gaps mentioned in metric 1 on that turn
-3) Turn count (non-LLM): student/tutor interaction counts
+3) Teaching quality (LLM, per tutor turn): insightfulness + applicability (1-5)
+4) Turn count (non-LLM): student/tutor interaction counts
 
 Supports:
 - Single-session transcript: {"transcript": [...], "entry": {...}}
@@ -355,6 +356,105 @@ def _build_source_faithfulness_summary(per_turn: list[dict]) -> dict:
     }
 
 
+async def evaluate_teaching_quality_turn(
+    *,
+    turn_index: int,
+    student_message: str,
+    tutor_response: str,
+    recent_context: str,
+    temperature: float,
+) -> dict:
+    """
+    Metric-3 (LLM): turn-level teaching quality on two dimensions:
+      - insightfulness (1-5)
+      - applicability (1-5)
+    """
+    prompt_cfg = load_prompt("eval_teaching_quality_turn")
+    user_prompt = prompt_cfg["user_template"].format(
+        turn_index=turn_index,
+        recent_context=recent_context,
+        student_message=student_message,
+        tutor_response=tutor_response,
+    )
+
+    try:
+        result = await call_llm_json(
+            user_prompt=user_prompt,
+            system_prompt=prompt_cfg["system"],
+            temperature=temperature,
+            max_tokens=700,
+        )
+    except (json.JSONDecodeError, Exception) as e:
+        logger.warning("Teaching quality failed at turn %d: %s", turn_index, e)
+        return {
+            "turn_index": turn_index,
+            "insightfulness_score": None,
+            "applicability_score": None,
+            "rationale": f"Evaluation failed: {e}",
+            "not_applicable": True,
+            "error": str(e),
+        }
+
+    insight = result.get("insightfulness_score")
+    applicability = result.get("applicability_score")
+    try:
+        insight = int(insight) if insight is not None else None
+    except (TypeError, ValueError):
+        insight = None
+    try:
+        applicability = int(applicability) if applicability is not None else None
+    except (TypeError, ValueError):
+        applicability = None
+
+    if insight is not None:
+        insight = max(1, min(5, insight))
+    if applicability is not None:
+        applicability = max(1, min(5, applicability))
+
+    return {
+        "turn_index": turn_index,
+        "insightfulness_score": insight,
+        "applicability_score": applicability,
+        "rationale": result.get("rationale", ""),
+        "evidence": result.get("evidence", []),
+        "not_applicable": insight is None and applicability is None,
+    }
+
+
+def _build_teaching_quality_summary(per_turn: list[dict]) -> dict:
+    """Aggregate metric-3 stats over scored turns only."""
+    insight_scores = [
+        t.get("insightfulness_score")
+        for t in per_turn
+        if t.get("insightfulness_score") is not None and not t.get("not_applicable")
+    ]
+    applicability_scores = [
+        t.get("applicability_score")
+        for t in per_turn
+        if t.get("applicability_score") is not None and not t.get("not_applicable")
+    ]
+    return {
+        "scale": "1-5",
+        "num_scored_turns_insightfulness": len(insight_scores),
+        "num_scored_turns_applicability": len(applicability_scores),
+        "avg_insightfulness": (
+            round(sum(insight_scores) / len(insight_scores), 2)
+            if insight_scores
+            else None
+        ),
+        "avg_applicability": (
+            round(sum(applicability_scores) / len(applicability_scores), 2)
+            if applicability_scores
+            else None
+        ),
+        "max_insightfulness": max(insight_scores) if insight_scores else None,
+        "min_insightfulness": min(insight_scores) if insight_scores else None,
+        "max_applicability": max(applicability_scores) if applicability_scores else None,
+        "min_applicability": min(applicability_scores) if applicability_scores else None,
+        "per_turn": per_turn,
+    }
+
+
 def _load_entry_by_id(entry_id: str) -> dict | None:
     """
     Try to load entry by entry_id from generated JSONL files.
@@ -382,7 +482,7 @@ async def _evaluate_single_session(
     skip_turns: bool,
     temperature: float,
 ) -> dict:
-    """Evaluate one session with 3 independent metrics."""
+    """Evaluate one session with 4 independent metrics."""
     dialog_msgs = _filter_dialog_messages(transcript)
     turns = _extract_turn_pairs(dialog_msgs)
     gaps = entry.get("gaps", [])
@@ -390,7 +490,7 @@ async def _evaluate_single_session(
     source_content = entry.get("source_content")
 
     logger.info(
-        "Metrics enabled: gap_tracking(LLM), source_faithfulness(LLM)%s, turn_count(non-LLM)",
+        "Metrics enabled: gap_tracking(LLM), source_faithfulness(LLM)%s, teaching_quality(LLM), turn_count(non-LLM)",
         " [source present]" if source_content else " [source missing: may be N/A]",
     )
 
@@ -404,6 +504,7 @@ async def _evaluate_single_session(
 
     gap_tracking_per_turn: list[dict] = []
     source_faithfulness_per_turn: list[dict] = []
+    teaching_quality_per_turn: list[dict] = []
     mentioned_so_far: set[str] = set()
     resolved_so_far: set[str] = set()
 
@@ -450,13 +551,25 @@ async def _evaluate_single_session(
             )
             source_faithfulness_per_turn.append(faith_turn)
 
+            # Metric 3: turn-level teaching quality
+            quality_turn = await evaluate_teaching_quality_turn(
+                turn_index=turn_index,
+                student_message=student_message,
+                tutor_response=tutor_response,
+                recent_context=recent_context,
+                temperature=temperature,
+            )
+            teaching_quality_per_turn.append(quality_turn)
+
             logger.info(
-                "Turn %d: mentioned=%d, newly_resolved=%d, resolved_total=%d, faithfulness=%s",
+                "Turn %d: mentioned=%d, newly_resolved=%d, resolved_total=%d, faithfulness=%s, insightfulness=%s, applicability=%s",
                 turn_index,
                 len(mentioned_turn),
                 len(resolved_turn_new),
                 len(resolved_so_far),
                 faith_turn.get("faithfulness_score", "N/A"),
+                quality_turn.get("insightfulness_score", "N/A"),
+                quality_turn.get("applicability_score", "N/A"),
             )
 
     gap_tracking_metric = {
@@ -467,6 +580,7 @@ async def _evaluate_single_session(
         "per_turn": gap_tracking_per_turn,
     }
     source_faithfulness_metric = _build_source_faithfulness_summary(source_faithfulness_per_turn)
+    teaching_quality_metric = _build_teaching_quality_summary(teaching_quality_per_turn)
 
     return {
         "entry_id": entry_id,
@@ -474,6 +588,7 @@ async def _evaluate_single_session(
         "metrics": {
             "gap_tracking": gap_tracking_metric,
             "source_faithfulness": source_faithfulness_metric,
+            "teaching_quality": teaching_quality_metric,
             "turn_count": turn_count_metric,
         },
     }
@@ -488,6 +603,8 @@ def _aggregate_multi_session(session_results: list[dict]) -> dict:
     total_tutor_turns = 0
     total_paired_turns = 0
     faith_scores = []
+    insight_scores = []
+    applicability_scores = []
     resolved_counts = []
     total_gaps_counts = []
 
@@ -507,6 +624,15 @@ def _aggregate_multi_session(session_results: list[dict]) -> dict:
             if score is not None and not t.get("not_applicable"):
                 faith_scores.append(score)
 
+        tq = s.get("metrics", {}).get("teaching_quality", {})
+        for t in tq.get("per_turn", []):
+            insight = t.get("insightfulness_score")
+            applicability = t.get("applicability_score")
+            if insight is not None and not t.get("not_applicable"):
+                insight_scores.append(insight)
+            if applicability is not None and not t.get("not_applicable"):
+                applicability_scores.append(applicability)
+
     return {
         "turn_count": {
             "student_turns_total": total_student_turns,
@@ -523,6 +649,21 @@ def _aggregate_multi_session(session_results: list[dict]) -> dict:
             "max_score_overall": max(faith_scores) if faith_scores else None,
             "min_score_overall": min(faith_scores) if faith_scores else None,
             "avg_score_overall": round(sum(faith_scores) / len(faith_scores), 2) if faith_scores else None,
+        },
+        "teaching_quality": {
+            "scale": "1-5",
+            "num_scored_turns_insightfulness_total": len(insight_scores),
+            "num_scored_turns_applicability_total": len(applicability_scores),
+            "avg_insightfulness_overall": (
+                round(sum(insight_scores) / len(insight_scores), 2)
+                if insight_scores
+                else None
+            ),
+            "avg_applicability_overall": (
+                round(sum(applicability_scores) / len(applicability_scores), 2)
+                if applicability_scores
+                else None
+            ),
         },
     }
 
