@@ -447,7 +447,6 @@ async def mock_tutor_generate_practice_questions(
             f"This is question {i} of {num_questions}.\n\n"
             "Requirements:\n"
             "- Keep it aligned with this session's covered concepts.\n"
-            "- Avoid overlap with previously generated questions.\n"
             "- Use the exact format:\n"
             "  <question stem>\n"
             "  A. <option>\n"
@@ -455,9 +454,7 @@ async def mock_tutor_generate_practice_questions(
             "  C. <option>\n"
             "  D. <option>\n"
             "- Exactly ONE option must be correct. The other three are distractors.\n"
-            "- Distractors should be plausible (targeting common misconceptions), "
-            "not obviously absurd, and not trivially eliminable at first glance.\n"
-            "- Do NOT include the answer or explanation.\n\n"
+            "- Include the correct answer and explanation.\n\n"
             f"Previously generated questions:\n{prev}"
         )
 

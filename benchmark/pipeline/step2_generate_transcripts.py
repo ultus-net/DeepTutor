@@ -21,6 +21,7 @@ import contextlib
 import io
 import json
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -254,6 +255,11 @@ async def main() -> None:
     parser.add_argument("--concurrency", type=int, default=6, help="Max parallel profiles")
     parser.add_argument("--max-turns", type=int, default=30, help="Max student turns per session")
     parser.add_argument("--language", default="en", help="DeepTutor language")
+    parser.add_argument(
+        "--model",
+        default="",
+        help="Override LLM model for step2 simulation. If set, ignores env LLM_MODEL.",
+    )
     parser.add_argument("--no-evolve", action="store_true", help="Disable profile evolution")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show per-turn output")
     parser.add_argument(
@@ -262,6 +268,16 @@ async def main() -> None:
         help="Accepted for compatibility; transcripts are overwritten by default.",
     )
     args = parser.parse_args()
+
+    if args.model:
+        # Force model override for this process.
+        os.environ["LLM_MODEL"] = args.model
+        try:
+            from src.services.llm.config import clear_llm_config_cache
+
+            clear_llm_config_cache()
+        except Exception:
+            pass
 
     # Suppress noisy logs from RAG/LLM internals during auto simulation
     from benchmark.simulation.conversation import _suppress_noisy_auto_logs
@@ -370,6 +386,7 @@ async def main() -> None:
         "timestamp": datetime.now().isoformat(),
         "kb_names": kb_names,
         "backends": backends,
+        "model": (args.model or os.getenv("LLM_MODEL", "")),
         "output_root": str(output_root),
         "concurrency_profile": args.concurrency,
         "backend_execution": "serial_per_profile",
