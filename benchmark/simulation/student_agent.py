@@ -141,6 +141,7 @@ class StudentAgent:
         """
         profile = entry.get("profile", {})
         gaps = entry.get("gaps", [])
+        task = entry.get("task", {})
         entry_id = entry.get("entry_id", "unknown")
 
         # Build system prompt from template
