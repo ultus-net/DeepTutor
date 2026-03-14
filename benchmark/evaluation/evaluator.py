@@ -31,6 +31,7 @@ logger = logging.getLogger("benchmark.evaluation")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 RECENT_CONTEXT_WINDOW = 8  # messages (student+tutor) to provide around each turn
+TEACHING_QUALITY_JSON_MAX_ATTEMPTS = 3
 
 
 def _format_profile(profile: dict) -> str:
@@ -386,14 +387,42 @@ async def evaluate_teaching_quality_turn(
         tutor_response=tutor_response,
     )
 
-    try:
-        result = await call_llm_json(
-            user_prompt=user_prompt,
-            system_prompt=prompt_cfg["system"],
-            temperature=temperature,
-            max_tokens=700,
-        )
-    except (json.JSONDecodeError, Exception) as e:
+    result = None
+    last_error: Exception | None = None
+    for attempt in range(1, TEACHING_QUALITY_JSON_MAX_ATTEMPTS + 1):
+        attempt_user_prompt = user_prompt
+        # On retries, harden output constraints to reduce malformed/truncated JSON.
+        if attempt > 1:
+            attempt_user_prompt = (
+                user_prompt
+                + "\n\nIMPORTANT OUTPUT FORMAT:\n"
+                + "- Return ONE complete JSON object only.\n"
+                + "- No markdown, no code fence, no extra text.\n"
+                + "- Ensure all quotes/braces are closed.\n"
+            )
+        attempt_temperature = temperature if attempt == 1 else min(temperature, 0.1)
+        try:
+            result = await call_llm_json(
+                user_prompt=attempt_user_prompt,
+                system_prompt=prompt_cfg["system"],
+                temperature=attempt_temperature,
+                max_tokens=700,
+            )
+            break
+        except Exception as e:
+            last_error = e
+            if attempt < TEACHING_QUALITY_JSON_MAX_ATTEMPTS:
+                logger.info(
+                    "Teaching quality parse retry turn %d attempt %d/%d: %s",
+                    turn_index,
+                    attempt + 1,
+                    TEACHING_QUALITY_JSON_MAX_ATTEMPTS,
+                    e,
+                )
+                continue
+
+    if result is None:
+        e = last_error or RuntimeError("Unknown error in teaching quality evaluation")
         logger.warning("Teaching quality failed at turn %d: %s", turn_index, e)
         return {
             "turn_index": turn_index,
