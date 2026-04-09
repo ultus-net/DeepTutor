@@ -1,0 +1,96 @@
+# ============================================
+# DeepTutor + Ollama — Local CPU Deployment
+# ============================================
+# Uses the official GHCR image for DeepTutor and runs Ollama
+# locally for LLM + embedding inference (no cloud API keys needed).
+#
+# Usage:
+#   docker compose -f docker-compose.local.yml up -d
+#
+# First-time model download (run after Ollama is healthy):
+#   docker compose -f docker-compose.local.yml exec ollama ollama pull gemma3:4b
+#   docker compose -f docker-compose.local.yml exec ollama ollama pull nomic-embed-text
+#
+# Then open: http://localhost:3782
+# ============================================
+
+services:
+  # ============================================
+  # Ollama — local inference server
+  # ============================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    expose:
+      - "11434"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - deeptutor-network
+
+  # ============================================
+  # DeepTutor — pre-built GHCR image
+  # ============================================
+  deeptutor:
+    image: ghcr.io/hkuds/deeptutor:latest
+    container_name: deeptutor
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8001}:${BACKEND_PORT:-8001}"
+      - "${FRONTEND_PORT:-3782}:${FRONTEND_PORT:-3782}"
+    env_file:
+      - .env
+    environment:
+      # LLM — served by Ollama container
+      - LLM_BINDING=openai
+      - LLM_MODEL=${LLM_MODEL:-gemma4:e4b}
+      - LLM_API_KEY=ollama
+      - LLM_HOST=http://ollama:11434/v1
+      - LLM_API_VERSION=
+      - DISABLE_SSL_VERIFY=false
+      # Embedding — served by Ollama container
+      - EMBEDDING_BINDING=openai
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text:latest}
+      - EMBEDDING_API_KEY=ollama
+      - EMBEDDING_HOST=http://ollama:11434/v1
+      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION:-768}
+      - EMBEDDING_API_VERSION=
+      # Search (optional)
+      - SEARCH_PROVIDER=${SEARCH_PROVIDER:-}
+      - SEARCH_API_KEY=${SEARCH_API_KEY:-}
+      - SEARCH_BASE_URL=${SEARCH_BASE_URL:-}
+      # Ports
+      - BACKEND_PORT=${BACKEND_PORT:-8001}
+      - FRONTEND_PORT=${FRONTEND_PORT:-3782}
+      # Remote deployment API URL (leave blank for local)
+      - NEXT_PUBLIC_API_BASE_EXTERNAL=${NEXT_PUBLIC_API_BASE_EXTERNAL:-}
+      - NEXT_PUBLIC_API_BASE=${NEXT_PUBLIC_API_BASE:-}
+    volumes:
+      # :z label required for SELinux on Fedora Atomic
+      - ./data/user:/app/data/user:z
+      - ./data/knowledge_bases:/app/data/knowledge_bases:z
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8001}/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - deeptutor-network
+
+volumes:
+  ollama_data:
+
+networks:
+  deeptutor-network:
+    driver: bridge
