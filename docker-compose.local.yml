@@ -79,6 +79,8 @@ services:
       # :z label required for SELinux on Fedora Atomic
       - ./data/user:/app/data/user:z
       - ./data/knowledge_bases:/app/data/knowledge_bases:z
+      # Local books library — read-only
+      - /home/hunter/Documents/Learning/Books:/app/books:ro,z
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT:-8001}/"]
       interval: 30s
