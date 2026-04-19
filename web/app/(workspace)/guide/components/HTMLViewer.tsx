@@ -33,7 +33,6 @@ export default function HTMLViewer({
 
   const sanitizeHtml = (rawHtml: string) =>
     rawHtml
-      .replace(/<script(?![^>]*katex)[\s\S]*?>[\s\S]*?<\/script>/gi, "")
       .replace(/\son[a-z]+\s*=\s*(['"]).*?\1/gi, (match) => {
         if (/onload\s*=\s*(['"])renderMathInElement/i.test(match)) return match;
         return "";

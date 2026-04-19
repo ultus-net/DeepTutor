@@ -72,8 +72,10 @@ inject_copilot_token() {
         error "Failed to get gh auth token"
         exit 1
     }
+    # Write token into .env (DeepTutor reads .env file, not shell env vars)
+    sed -i "s|^LLM_API_KEY=.*|LLM_API_KEY=${token}|" "$SCRIPT_DIR/.env"
     export LLM_API_KEY="$token"
-    info "Copilot token injected into LLM_API_KEY"
+    info "Copilot token injected into .env and LLM_API_KEY"
 }
 
 start_backend() {
